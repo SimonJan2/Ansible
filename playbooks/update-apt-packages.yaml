@@ -1,4 +1,3 @@
-#! /usr/bin/env ansible-playbook
 # Ansible playbook to update all apt packages on the target nodes.
 ---
 - hosts: all
