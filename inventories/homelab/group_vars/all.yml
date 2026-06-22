@@ -1,0 +1,6 @@
+# Variables applied to all hosts in the homelab inventory.
+# Add non-secret defaults here on task branches.
+#
+# Example:
+# ansible_user: deploy
+# timezone: Asia/Jerusalem

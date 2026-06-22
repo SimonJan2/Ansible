@@ -1,0 +1,21 @@
+# Ansible runtime
+*.retry
+.ansible/
+*.log
+
+# Vault and secrets
+*.vault
+vault_pass
+.vault_pass
+.env
+*.pem
+id_rsa*
+
+# Python
+.venv/
+venv/
+
+# macOS
+.DS_Store
+._*
+
