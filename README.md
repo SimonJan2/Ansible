@@ -2,7 +2,7 @@
 
 Personal Ansible learning repo following the [LearnLinuxTV Ansible series](https://www.youtube.com/@LearnLinuxTV). This branch tracks hands-on progress through the course, starting with inventory setup and ad-hoc commands against a homelab of six VMs.
 
-**Current milestone:** Episode 4 complete — ad-hoc commands working against all 6 hosts.
+**Current milestone:** Episode 5 complete — elevated commands with `--become` working against all 6 hosts.
 
 **Branch:** `Learn-Ansible`
 
@@ -18,6 +18,8 @@ Before running any commands, the following should be in place:
   ```
 
 - **SSH key pair:** `~/.ssh/ansible-new` created and deployed to all target hosts (`authorized_keys`)
+- **SSH user:** `simonj` on all target hosts
+- **Passwordless sudo:** `simonj` can run `sudo` without a password on all 6 hosts (see [Sudo prompt issue](#sudo-prompt-issue-ubuntu-2604) below)
 - **Git repo:** cloned locally; work on the `Learn-Ansible` branch
 - **Target hosts:** 6 VMs reachable at `10.100.102.168`–`10.100.102.173`
 - **Python on targets:** Python 3.14 (set via inventory variable)
@@ -34,13 +36,13 @@ ansible all -m ping
 
 Expected output: `SUCCESS` with `"ping": "pong"` for each host.
 
-The [`ansible.cfg`](ansible.cfg) in this directory is loaded automatically when you run commands from the repo root. It sets the inventory file and SSH key path, so you do not need to pass `-i` or `--key-file` on every command.
+The [`ansible.cfg`](ansible.cfg) in this directory is loaded automatically when you run commands from the repo root. It sets the inventory file, SSH key path, remote user, and sudo method — so you do not need to pass `-i`, `--key-file`, or `-u` on every command.
 
 ## Repository layout
 
 ```
 Ansible/
-├── ansible.cfg      # Defaults (inventory path, SSH key)
+├── ansible.cfg      # Defaults (inventory path, SSH key, become)
 ├── inventory        # Host list and group vars
 ├── playbooks/       # Empty for now — first playbook in Episode 6
 └── README.md        # This guide
@@ -48,11 +50,12 @@ Ansible/
 
 ### Inventory
 
-[`inventory`](inventory) defines all managed hosts and a group variable for the Python interpreter:
+[`inventory`](inventory) defines all managed hosts and group variables for Python and privilege escalation:
 
 ```ini
 [all:vars]
 ansible_python_interpreter=/usr/bin/python3.14
+ansible_become_method=sudo
 
 [my_hosts]
 10.100.102.170
@@ -92,13 +95,19 @@ With this set, Ansible uses that path directly and the warning goes away. See [i
 [defaults]
 inventory = inventory
 private_key_file = ~/.ssh/ansible-new
+remote_user = simonj
+
+[privilege_escalation]
+become_method = sudo
 ```
 
 This local config overrides `/etc/ansible/ansible.cfg` when commands are run from this directory.
 
 ## Commands reference
 
-Ad-hoc commands from Episode 4. Run these from the repo root.
+Run these from the repo root.
+
+### Episode 4 — connectivity and facts
 
 | Command | What it does |
 |---------|--------------|
@@ -113,6 +122,39 @@ Before `ansible.cfg` was created, the equivalent long-form ping command was:
 ansible all --key-file ~/.ssh/ansible-new -i inventory -m ping
 ```
 
+### Episode 5 — privilege escalation (`--become`)
+
+The `--become` flag tells Ansible to run the module as root via `sudo`. Because `remote_user` and `become_method` are set in [`ansible.cfg`](ansible.cfg), you only need to add `--become` on the command line.
+
+| Command | What it does |
+|---------|--------------|
+| `ansible all -m apt -a "update_cache=true" --become` | Refresh apt cache (verified) |
+| `ansible all -m apt -a name=vim-nox --become` | Install a package |
+| `ansible all -m apt -a "name=snapd state=latest" --become` | Install or upgrade to latest |
+| `ansible all -m apt -a upgrade=dist --become` | Full dist-upgrade |
+
+The [course wiki](https://www.learnlinux.tv/getting-started-with-ansible-05-running-elevated-commands/) uses `--ask-become-pass` on these commands. In this setup that flag is **not needed** because passwordless sudo is configured (see below).
+
+#### Sudo prompt issue (Ubuntu 26.04)
+
+**Problem:** With `--ask-become-pass`, Ansible passes a custom sudo prompt (`-p "[sudo via ansible...] password:"`) so it knows when to inject the password. Ubuntu 26.04's new sudo implementation (`sudo-rs`) ignores that flag and shows its own prompt instead:
+
+```
+[sudo: authenticate] Password:
+```
+
+Ansible never sees the expected string, hangs, and times out.
+
+**Fix applied (Option 1 — recommended):** Passwordless sudo for the automation user on every target. Run once per host:
+
+```bash
+echo "simonj ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/simonj
+```
+
+Applied on all 6 hosts. After this, `--become` works without `--ask-become-pass`.
+
+**Alternative (Option 2 — not used):** If passwords are mandatory, replace `sudo-rs` with classic GNU sudo: `sudo apt install sudo`.
+
 ## Course reference
 
 Following the [full playlist](https://www.youtube.com/playlist?list=PLT98CRl2KxKEUHie1m24-wkyHpEsa4Y70).
@@ -123,10 +165,9 @@ Following the [full playlist](https://www.youtube.com/playlist?list=PLT98CRl2KxK
 | 2 | SSH Overview & Setup | [linux.video/ansible2](https://linux.video/ansible2) | Created `~/.ssh/ansible-new`, deployed to targets |
 | 3 | Git Repository Setup | [linux.video/ansible3](https://linux.video/ansible3) | Cloned repo, created `Learn-Ansible` branch |
 | 4 | Ad-hoc Commands | [YouTube](https://www.youtube.com/watch?v=4REljLsOnXk&list=PLT98CRl2KxKEUHie1m24-wkyHpEsa4Y70&index=4) · [Wiki](https://www.learnlinux.tv/getting-started-with-ansible-04-executing-ad-hoc-commands/) | Added `inventory`, `ansible.cfg`; verified `ansible all -m ping` |
-| 5 | Running Elevated Commands | [linux.video/ansible5](https://linux.video/ansible5) | — |
+| 5 | Running Elevated Commands | [YouTube](https://www.youtube.com/watch?v=FPU9_KDTa8A&list=PLT98CRl2KxKEUHie1m24-wkyHpEsa4Y70&index=5) · [Wiki](https://www.learnlinux.tv/getting-started-with-ansible-05-running-elevated-commands/) | Ran `apt update_cache` with `--become`; fixed sudo-rs via NOPASSWD on all hosts |
 | 6 | Writing our first Playbook | [linux.video/ansible6](https://linux.video/ansible6) | — |
 
 ## What's next
 
-- **Episode 5:** Run commands with elevated privileges (`become`, `sudo`).
 - **Episode 6:** Write the first playbook — content will go in `playbooks/`.
