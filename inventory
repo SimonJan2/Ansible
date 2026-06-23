@@ -1,6 +1,7 @@
 [all:vars]
 ansible_python_interpreter=/usr/bin/python3.14
 
+[my_hosts]
 10.100.102.170
 10.100.102.168
 10.100.102.169
