@@ -66,6 +66,24 @@ ansible_python_interpreter=/usr/bin/python3.14
 - `ansible all` targets every host in the inventory (currently 6 hosts).
 - `ansible my_hosts` targets only the hosts in the `my_hosts` group.
 
+#### Python interpreter warning
+
+Ansible needs Python on each target host to run modules. If you do not tell it which interpreter to use, it **auto-discovers** one (e.g. `/usr/bin/python3.14`) and shows a warning like:
+
+```
+[WARNING]: Host '10.100.102.171' is using the discovered Python interpreter at '/usr/bin/python3.14', but future installation of another Python interpreter could cause a different interpreter to be discovered.
+```
+
+That warning is harmless for a ping test, but it means Ansible guessed the Python path. If another version is installed later, it might pick a different one next time.
+
+The `[all:vars]` block pins the interpreter for every host:
+
+```ini
+ansible_python_interpreter=/usr/bin/python3.14
+```
+
+With this set, Ansible uses that path directly and the warning goes away. See [interpreter discovery](https://docs.ansible.com/ansible-core/2.20/reference_appendices/interpreter_discovery.html) for details.
+
 ### Ansible configuration
 
 [`ansible.cfg`](ansible.cfg) sets repo-wide defaults:
