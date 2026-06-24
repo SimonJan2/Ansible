@@ -10,7 +10,7 @@
     state: directory
     mode: '0644'
 
-# Copy server config to server 1 for bootstrap - we need to change server2 & 3 later with the token
+# Copy server config to kube-master-1 for bootstrap - we need to change masters 2 & 3 later with the token
 - name: Deploy RKE2 server Configuration
   ansible.builtin.template:
     src: templates/rke2-server-config.j2
@@ -45,9 +45,9 @@
     enabled: true
     state: restarted
     daemon_reload: true
-  when: inventory_hostname in groups['servers'][0]
+  when: inventory_hostname == groups['servers'][0]
 
-# wait for node token to be availale so that we can copy it, we need this to join other nodes
+# wait for node token to be available so that we can copy it, we need this to join other nodes
 - name: Wait for node-token
   ansible.builtin.wait_for:
     path: /var/lib/rancher/rke2/server/node-token
@@ -125,10 +125,10 @@
     mode: "u=rw,g=,o="
   when: inventory_hostname == groups['servers'][0]
 
-# change IP from local to server 1 IP
-- name: Replace IP address with server1
+# change IP from local to kube-master-1 IP
+- name: Replace loopback address in kubeconfig with kube-master-1 IP
   ansible.builtin.replace:
     path: /home/{{ ansible_user }}/.kube/config
     regexp: '127.0.0.1'
-    replace: "{{ hostvars['server1']['ansible_host'] }}"
+    replace: "{{ hostvars['kube-master-1']['ansible_host'] }}"
   when: inventory_hostname == groups['servers'][0]
