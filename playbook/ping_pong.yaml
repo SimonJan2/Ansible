@@ -1,0 +1,8 @@
+# Ansible playbook to ping and pong between two nodes
+---
+- name: Ping and pong between two nodes
+  hosts: all
+  become: true
+  tasks:
+    - name: Ping the node
+      ping:
