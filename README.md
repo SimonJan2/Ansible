@@ -249,27 +249,31 @@ helm install headlamp headlamp/headlamp --namespace headlamp --create-namespace 
 
 ## Migrating from RKE2
 
-This playbook targets the **same 6 nodes** as the `RKE2-Cluster` branch. Running both on the same nodes simultaneously will cause conflicts (duplicate VIP, port 6443, shared `/dev/sdb` mount). Before running this playbook:
+This playbook targets the **same 6 nodes** as the `RKE2-Cluster` branch. Running both on the same nodes simultaneously will cause conflicts (duplicate VIP, port 6443, shared `/dev/sdb` mount).
 
-1. Stop and uninstall RKE2 on all nodes:
+Note: the RKE2 branch installs RKE2 as a **raw binary + hand-written systemd units** (no official `install.sh`/`rke2-uninstall.sh` script is ever run), so there is no bundled uninstaller to call — clean up manually instead. Before running this playbook:
+
+1. Stop and disable the RKE2 services on all nodes:
 
    ```bash
    # On each server node
    sudo systemctl stop rke2-server
-   sudo /usr/local/bin/rke2-uninstall.sh
+   sudo systemctl disable rke2-server
 
    # On each agent node
    sudo systemctl stop rke2-agent
-   sudo /usr/local/bin/rke2-agent-uninstall.sh
+   sudo systemctl disable rke2-agent
    ```
 
-2. Clean up leftover data:
+2. Remove the RKE2 systemd units, binary, and data directories (on all nodes):
 
    ```bash
-   sudo rm -rf /etc/rancher/rke2 /var/lib/rancher/rke2
+   sudo rm -f /etc/systemd/system/rke2-server.service /etc/systemd/system/rke2-agent.service
+   sudo systemctl daemon-reload
+   sudo rm -rf /etc/rancher/rke2 /var/lib/rancher/rke2 /usr/local/bin/rke2 /usr/local/bin/kubectl
    ```
 
-3. Reboot all nodes (recommended — ensures the VIP is released and kernel state is clean):
+3. Reboot all nodes (recommended — ensures the VIP is released, `/dev/sdb`'s mount is cleanly re-established, and kernel/network state is fresh):
 
    ```bash
    sudo reboot
@@ -285,7 +289,7 @@ This playbook targets the **same 6 nodes** as the `RKE2-Cluster` branch. Running
 
 ## Known Limitations / TODOs
 
-- **Linux amd64 only** — The download URL uses the binary name `k3s` (amd64). Other architectures (`arm64`, `armhf`) require a different binary name suffix; update `vars/main.yaml` in the `k3s-download` role.
+- **Tested on amd64 only** — The download URL derives the binary name from the `arch` variable (`k3s` for `amd64`, `k3s-arm64`/`k3s-armhf` otherwise), so changing `arch` in `group_vars/all.yaml` should work, but only the `amd64` path has actually been run/tested in this homelab.
 - **Ubuntu 26.04 not in K3s support matrix** — Only Ubuntu 22.04 and 24.04 are officially tested. Works fine in practice on 26.04.
 - **Minimum 2 GB RAM per control-plane node** — K3s is lighter than RKE2 but still needs ≥2 GB for the embedded etcd + kube-apiserver on the control-plane nodes.
 - **No multi-CNI support** — Only the K3s default CNI (Flannel) is supported. Calico or Cilium would require additional configuration and disabling Flannel at install time.
