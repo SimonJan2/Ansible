@@ -244,6 +244,46 @@ helm install headlamp headlamp/headlamp --namespace headlamp --create-namespace 
 
 ---
 
+## Migrating from K3s
+
+This playbook targets the **same 6 nodes** as the `K3s-Cluster` branch. Running both on the same nodes simultaneously will cause conflicts (duplicate VIP, port 6443, shared `/dev/sdb` mount).
+
+Note: the K3s branch installs K3s as a **raw binary + hand-written systemd units** (no official `install.sh`/`k3s-uninstall.sh` script is ever run), so there is no bundled uninstaller to call — clean up manually instead. Before running this playbook:
+
+1. Stop and disable the K3s services on all nodes:
+
+   ```bash
+   # On each server node
+   sudo systemctl stop k3s-server
+   sudo systemctl disable k3s-server
+
+   # On each agent node
+   sudo systemctl stop k3s-agent
+   sudo systemctl disable k3s-agent
+   ```
+
+2. Remove the K3s systemd units, binary, and data directories (on all nodes):
+
+   ```bash
+   sudo rm -f /etc/systemd/system/k3s-server.service /etc/systemd/system/k3s-agent.service
+   sudo systemctl daemon-reload
+   sudo rm -rf /etc/rancher/k3s /var/lib/rancher/k3s /usr/local/bin/k3s /usr/local/bin/kubectl
+   ```
+
+3. Reboot all nodes (recommended — ensures the VIP is released, `/dev/sdb`'s mount is cleanly re-established, and kernel/network state is fresh):
+
+   ```bash
+   sudo reboot
+   ```
+
+4. Run this playbook:
+
+   ```bash
+   ansible-playbook site.yaml
+   ```
+
+---
+
 ## Known Limitations / TODOs
 
 - **Linux amd64 only** — The `os` and `arch` variables are used directly in the download URL. Other architectures require changing these variables.
