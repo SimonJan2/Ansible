@@ -1,125 +1,294 @@
-# Ansible
+# RKE2 Homelab Cluster
 
-Personal Ansible automation for my homelab infrastructure.
+Ansible playbook that deploys a high-availability [RKE2](https://docs.rke2.io/) Kubernetes cluster on 6 bare-metal/VM nodes with:
 
-This is my central place for homelab automation — one task, one branch, one PR at a time. The `main` branch holds the repository skeleton, shared config, and workflow docs. Every piece of real automation (playbooks, roles, inventory entries) lands via a dedicated task branch and merges when it is tested and ready.
+- Virtual control-plane IP via [kube-vip](https://kube-vip.io/) (ARP mode)
+- LoadBalancer IP pool via [MetalLB](https://metallb.universe.tf/)
+- Longhorn-ready disk provisioning (`/dev/sdb` formatted and mounted on every node)
+- Traefik ingress (bundled with RKE2 v1.36, replaces the retired ingress-nginx)
 
-## About
+**Cluster topology:**
+- 3 control-plane servers (`10.100.102.168–170`) — 4 GB RAM, 4 vCPU, 50 GB OS disk + 60 GB Longhorn disk
+- 3 worker agents (`10.100.102.171–173`) — 4 GB RAM, 4 vCPU, 50 GB OS disk + 60 GB Longhorn disk
+- Control-plane VIP: `10.100.102.175`
+- MetalLB LoadBalancer pool: `10.100.102.180–185`
 
-I use this repo to manage servers, VMs, and services in my personal homelab. Rather than a monolithic dump of playbooks, I keep `main` lean and stable, and treat each automation task as a small, reviewable unit of work. That makes it easier to test changes, roll back if needed, and grow the repo without losing clarity.
+---
 
-**Current status:** scaffold phase — structure and tooling are in place; playbooks and roles will arrive on task branches.
+## Architecture
 
-## Repository structure
+```mermaid
+flowchart TD
+    ansible[Ansible Controller]
 
+    subgraph controlPlane [Control Plane]
+        km1["kube-master-1\n10.100.102.168\n(bootstrap)"]
+        km2["kube-master-2\n10.100.102.169"]
+        km3["kube-master-3\n10.100.102.170"]
+    end
+
+    subgraph workers [Workers]
+        kn1["kube-node-1\n10.100.102.171"]
+        kn2["kube-node-2\n10.100.102.172"]
+        kn3["kube-node-3\n10.100.102.173"]
+    end
+
+    vip["kube-vip VIP\n10.100.102.175\n:6443"]
+    metallb["MetalLB Pool\n10.100.102.180-185"]
+
+    ansible --> km1
+    ansible --> km2
+    ansible --> km3
+    ansible --> kn1
+    ansible --> kn2
+    ansible --> kn3
+
+    km1 --- vip
+    km2 --- vip
+    km3 --- vip
+
+    vip --> metallb
 ```
-Ansible/
-├── ansible.cfg              # Ansible defaults (inventory path, roles, etc.)
-├── requirements.yml         # Galaxy collections (add on task branches)
-├── inventories/
-│   └── homelab/
-│       ├── hosts.yml        # Host and group definitions
-│       ├── group_vars/      # Variables shared across groups
-│       └── host_vars/       # Per-host overrides
-├── playbooks/               # Playbooks (added via task branches)
-├── roles/                   # Custom roles (added via task branches)
-└── .github/workflows/       # CI (ansible-lint on PRs)
-```
 
-| Path | Purpose |
-|------|---------|
-| `inventories/homelab/` | Primary homelab inventory and variables |
-| `playbooks/` | Standalone playbooks for specific tasks |
-| `roles/` | Reusable role definitions |
-| `ansible.cfg` | Repo-wide Ansible configuration |
-| `requirements.yml` | External collection dependencies |
+---
 
-## Getting started
+## Prerequisites
 
-**Prerequisites:** Python 3.10+ and pip.
+| Requirement | Detail |
+|---|---|
+| OS / arch | Ubuntu 26.04 LTS (resolute), amd64 |
+| RAM | **Minimum 4 GB per node** — control-plane nodes need ≥4 GB for etcd + kube-apiserver to start reliably |
+| Ansible | >= 2.14 on the controller |
+| SSH key | `~/.ssh/ansible-new` with access to all nodes as `simonj` |
+| Passwordless sudo | Already applied on all 6 nodes: `simonj ALL=(ALL) NOPASSWD: ALL` |
+| Python | `/usr/bin/python3.14` on all target nodes |
+| Disks | `sda` — OS (50 GB); `sdb` — Longhorn data (60 GB, raw, no existing filesystem) |
+| Ports | TCP 6443 (API), TCP 9345 (RKE2 supervisor), plus standard Kubernetes inter-node ports |
+
+Install required Ansible collections before running:
 
 ```bash
-git clone https://github.com/<your-username>/Ansible.git
-cd Ansible
-
-pip install ansible-core ansible-lint
-
-# Optional: install collections when requirements.yml lists them
-ansible-galaxy collection install -r requirements.yml
+ansible-galaxy collection install -r collections/requirements.yaml
 ```
 
-Verify the setup:
+Collections used:
+
+| Collection | Purpose |
+|---|---|
+| `ansible.posix` | `sysctl` and `mount` modules |
+| `ansible.utils` | Utility filters |
+| `community.general` | `filesystem` module for sdb formatting |
+| `kubernetes.core` | Kubernetes API interaction (listed as dependency) |
+
+---
+
+## Quick Start
 
 ```bash
-ansible-inventory --list
-ansible-lint
+ansible-playbook site.yaml
 ```
 
-## Branch workflow
+That's it. Run from the repo root. Full steps below.
 
-Every automation task gets its own branch. Nothing merges to `main` until it is complete and tested.
+1. **Clone the repository**
 
-### Branch naming
-
-| Prefix | Use |
-|--------|-----|
-| `task/<short-description>` | New automation (playbook, role, inventory entry) |
-| `fix/<short-description>` | Bug fix to existing automation |
-| `chore/<short-description>` | Repo maintenance (CI, deps, docs) |
-
-Examples: `task/setup-docker`, `task/configure-nginx`, `fix/nginx-restart-handler`
-
-### Workflow
-
-1. Branch from `main`:
    ```bash
-   git checkout main
-   git pull
-   git checkout -b task/setup-docker
+   git clone <repo-url>
+   cd Ansible
    ```
-2. Add your playbook, role, inventory entries, and variables on that branch.
-3. Open a pull request to `main` — CI runs `ansible-lint` automatically.
-4. Merge when the task is complete and tested against homelab targets.
-5. Delete the branch after merge.
 
-### Rules for `main`
+2. **Verify the inventory** matches your nodes (`inventory/hosts.ini`)
 
-- Never commit plaintext secrets — use [Ansible Vault](#secrets--vault) on the task branch.
-- One logical task per branch (easier review and rollback).
-- Keep `main` always in a runnable state.
+3. **Verify the variables** in `inventory/group_vars/all.yaml`
 
-## Running playbooks
+4. **Install Ansible collections** (first time only)
 
-Once playbooks exist on `main` (via merged task branches):
+   ```bash
+   ansible-galaxy collection install -r collections/requirements.yaml
+   ```
 
-```bash
-# Dry run — show what would change
-ansible-playbook playbooks/example.yml --check
+5. **Run the playbook**
 
-# Apply changes
-ansible-playbook playbooks/example.yml
+   ```bash
+   ansible-playbook site.yaml
+   ```
 
-# Limit to a host or group
-ansible-playbook playbooks/example.yml --limit docker-host.local
+   The full run takes 5–15 minutes depending on hardware and internet speed. All 6 nodes are configured in parallel where possible.
+
+---
+
+## Inventory
+
+`inventory/hosts.ini`:
+
+```ini
+[servers]
+kube-master-1 ansible_host=10.100.102.168
+kube-master-2 ansible_host=10.100.102.169
+kube-master-3 ansible_host=10.100.102.170
+
+[agents]
+kube-node-1 ansible_host=10.100.102.171
+kube-node-2 ansible_host=10.100.102.172
+kube-node-3 ansible_host=10.100.102.173
+
+[rke2:children]
+servers
+agents
+
+[rke2:vars]
+ansible_user=simonj
 ```
 
-## Secrets and Vault
+- `servers` — RKE2 control-plane nodes. **`kube-master-1` is always the bootstrap node.**
+- `agents` — RKE2 worker nodes.
+- `rke2` — parent group encompassing all nodes.
 
-Sensitive values (passwords, API keys, tokens) must be encrypted with Ansible Vault:
+---
 
-```bash
-# Create an encrypted file
-ansible-vault create inventories/homelab/group_vars/secrets.yml
+## Configuration
 
-# Edit an existing vault file
-ansible-vault edit inventories/homelab/group_vars/secrets.yml
+All user-facing variables live in `inventory/group_vars/all.yaml`.
 
-# Run a playbook that uses vault-encrypted vars
-ansible-playbook playbooks/example.yml --ask-vault-pass
+| Variable | Value | Description |
+|---|---|---|
+| `os` | `linux` | Target OS (used in the RKE2 download URL) |
+| `arch` | `amd64` | Target architecture |
+| `vip` | `10.100.102.175` | Virtual IP for the control-plane, managed by kube-vip |
+| `rke2_version` | `v1.36.1+rke2r2` | RKE2 release to download |
+| `kube_vip_version` | `v1.2.0` | kube-vip image tag |
+| `vip_interface` | `ens18` | Network interface kube-vip binds the VIP to |
+| `metallb_version` | `v0.16.0` | MetalLB release to deploy |
+| `lb_range` | `10.100.102.180-10.100.102.185` | MetalLB `IPAddressPool` range |
+| `lb_pool_name` | `first-pool` | Name of the MetalLB `IPAddressPool` resource |
+| `rke2_install_dir` | `/usr/local/bin` | Directory the RKE2 binary is downloaded to |
+
+---
+
+## Playbook Flow
+
+The main playbook `site.yaml` runs six sequential plays:
+
+```mermaid
+flowchart LR
+    p1["Play 1\nPrepare all nodes"]
+    p2["Play 2\nDeploy kube-vip"]
+    p3["Play 3\nPrepare RKE2"]
+    p4["Play 4\nAdd servers"]
+    p5["Play 5\nAdd agents"]
+    p6["Play 6\nApply manifests"]
+
+    p1 --> p2 --> p3 --> p4 --> p5 --> p6
 ```
 
-Do not commit vault password files (`.vault_pass`, `vault_pass`) — they are listed in `.gitignore`.
+| # | Play | Target hosts | What happens |
+|---|---|---|---|
+| 1 | Prepare all nodes | `rke2` (all) | Enable IPv4/IPv6 forwarding; install Longhorn prereqs (`open-iscsi`, `nfs-common`); format `/dev/sdb` as ext4 and mount to `/var/lib/longhorn`; download the RKE2 binary to `/usr/local/bin` |
+| 2 | Deploy kube-vip | `servers` | Create `/var/lib/rancher/rke2/server/manifests/`; render the kube-vip DaemonSet manifest onto `kube-master-1` for auto-deployment at bootstrap |
+| 3 | Prepare RKE2 | `servers`, `agents` | Deploy server config + systemd unit to all servers; deploy agent systemd unit to agents; start `rke2-server` on `kube-master-1`; wait for the node token; distribute join token as a host fact; copy kubeconfig for `simonj` |
+| 4 | Add additional servers | `servers` | Deploy join config (with token) to `kube-master-2`/`kube-master-3`; wait for cluster API on `kube-master-1`; apply kube-vip RBAC and cloud-controller manifests; start `rke2-server` on remaining servers |
+| 5 | Add agents | `agents` | Deploy agent join config (with token); start/restart `rke2-agent` on all agents |
+| 6 | Apply manifests | `servers` | Wait for all `server=true` nodes Ready; deploy MetalLB native manifest (v0.16.0); wait for MetalLB controller pod; apply `L2Advertisement`; render and apply `IPAddressPool` |
 
-## License
+---
 
-Personal homelab use. Adjust or add a license if you fork or reuse this structure.
+## Role Reference
+
+| Role | Directory | Summary |
+|---|---|---|
+| `prepare-nodes` | `roles/prepare-nodes/` | Sets IP forwarding via sysctl; installs Longhorn prerequisites; formats `/dev/sdb` as ext4 and mounts it to `/var/lib/longhorn` on all nodes |
+| `rke2-download` | `roles/rke2-download/` | Creates `rke2_install_dir` and downloads the RKE2 binary from GitHub releases |
+| `kube-vip` | `roles/kube-vip/` | Renders and places the kube-vip DaemonSet manifest (ARP mode on `ens18`) on `kube-master-1` for RKE2 to auto-apply at bootstrap |
+| `rke2-prepare` | `roles/rke2-prepare/` | Bootstraps `kube-master-1`, creates systemd service units for servers and agents, captures and distributes the cluster join token, and sets up kubeconfig |
+| `add-server` | `roles/add-server/` | Joins `kube-master-2` and `kube-master-3` to the cluster using the bootstrap token; applies kube-vip RBAC and cloud-controller |
+| `add-agent` | `roles/add-agent/` | Joins all agent nodes using the bootstrap token |
+| `apply-manifests` | `roles/apply-manifests/` | Deploys MetalLB (controller, L2Advertisement, IPAddressPool) |
+
+---
+
+## Post-Installation
+
+After a successful run, the kubeconfig is available on `kube-master-1` at:
+
+```
+/home/simonj/.kube/config
+```
+
+The API server is accessible via the kube-vip VIP:
+
+```bash
+kubectl --kubeconfig ~/.kube/config get nodes
+```
+
+The cluster is configured with:
+- **Ingress**: Traefik (RKE2 v1.36 default — ingress-nginx is deprecated and disabled)
+- **CNI**: Canal/Flannel (RKE2 default)
+- **Node labels**: `server=true` on control-plane nodes, `agent=true` on worker nodes
+- **Longhorn storage**: `/dev/sdb` mounted to `/var/lib/longhorn` on every node, ready for Longhorn installation
+
+### Next steps (manual, via Helm)
+
+```bash
+# cert-manager (required by Longhorn and Traefik TLS)
+helm repo add jetstack https://charts.jetstack.io
+helm install cert-manager jetstack/cert-manager --namespace cert-manager --create-namespace --set crds.enabled=true
+
+# Longhorn
+helm repo add longhorn https://charts.longhorn.io
+helm install longhorn longhorn/longhorn --namespace longhorn-system --create-namespace
+
+# Headlamp (optional Kubernetes UI)
+helm repo add headlamp https://headlamp-k8s.github.io/headlamp/
+helm install headlamp headlamp/headlamp --namespace headlamp --create-namespace --set service.type=LoadBalancer
+```
+
+---
+
+## Migrating from K3s
+
+This playbook targets the **same 6 nodes** as the `K3s-Cluster` branch. Running both on the same nodes simultaneously will cause conflicts (duplicate VIP, port 6443, shared `/dev/sdb` mount).
+
+Note: the K3s branch installs K3s as a **raw binary + hand-written systemd units** (no official `install.sh`/`k3s-uninstall.sh` script is ever run), so there is no bundled uninstaller to call — clean up manually instead. Before running this playbook:
+
+1. Stop and disable the K3s services on all nodes:
+
+   ```bash
+   # On each server node
+   sudo systemctl stop k3s-server
+   sudo systemctl disable k3s-server
+
+   # On each agent node
+   sudo systemctl stop k3s-agent
+   sudo systemctl disable k3s-agent
+   ```
+
+2. Remove the K3s systemd units, binary, and data directories (on all nodes):
+
+   ```bash
+   sudo rm -f /etc/systemd/system/k3s-server.service /etc/systemd/system/k3s-agent.service
+   sudo systemctl daemon-reload
+   sudo rm -rf /etc/rancher/k3s /var/lib/rancher/k3s /usr/local/bin/k3s /usr/local/bin/kubectl
+   ```
+
+3. Reboot all nodes (recommended — ensures the VIP is released, `/dev/sdb`'s mount is cleanly re-established, and kernel/network state is fresh):
+
+   ```bash
+   sudo reboot
+   ```
+
+4. Run this playbook:
+
+   ```bash
+   ansible-playbook site.yaml
+   ```
+
+---
+
+## Known Limitations / TODOs
+
+- **Linux amd64 only** — The `os` and `arch` variables are used directly in the download URL. Other architectures require changing these variables.
+- **Ubuntu 26.04 not officially tested** — Only Ubuntu 24.04 is in the RKE2 support matrix. Works fine in practice (tested and confirmed working).
+- **Minimum 4 GB RAM required on control-plane nodes** — RKE2 v1.36 needs `Delegate=yes` and `TasksMax=infinity` in the systemd unit (already set in the templates). Nodes with less than ~3 GB RAM will stall on kube-apiserver startup.
+- **No multi-CNI support** — Only the RKE2 default CNI (Canal/Flannel) is supported. Canal, Calico, or Cilium would require additional configuration.
+- **`kubernetes.core` collection unused** — Listed as a collection dependency but all cluster interactions use raw `kubectl` commands. A future improvement would be to replace `kubectl` shell commands with `kubernetes.core` tasks.
+- **Wait logic is basic** — Server readiness polling uses fixed retry/delay loops. Slow environments may need `retries` values increased in `roles/add-server/tasks/main.yaml` and `roles/apply-manifests/tasks/main.yaml`.

@@ -1,0 +1,14 @@
+---
+os: "linux"
+arch: "amd64"
+
+vip: 10.100.102.175
+
+rke2_version: "v1.36.1+rke2r2"
+
+metallb_version: v0.16.0
+lb_range: 10.100.102.180-10.100.102.185
+lb_pool_name: first-pool
+
+kube_vip_version: "v1.2.0"
+vip_interface: "ens18"

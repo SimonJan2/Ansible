@@ -1,0 +1,25 @@
+[Unit]
+Description=Rancher Kubernetes Engine v2 (agent)
+Documentation=https://github.com/rancher/rke2#readme
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=notify
+EnvironmentFile=-/etc/default/rke2-agent
+EnvironmentFile=-/etc/sysconfig/rke2-agent
+KillMode=process
+Delegate=yes
+LimitNOFILE=1048576
+LimitNPROC=infinity
+LimitCORE=infinity
+TasksMax=infinity
+TimeoutStartSec=0
+Restart=always
+RestartSec=5s
+ExecStartPre=-/sbin/modprobe br_netfilter
+ExecStartPre=-/sbin/modprobe overlay
+ExecStart=/usr/local/bin/rke2 agent
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,57 @@
+- name: Enable IPv4 forwarding
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_forward
+    value: "1"
+    state: present
+    reload: true
+  tags: sysctl
+
+- name: Enable IPv6 forwarding
+  ansible.posix.sysctl:
+    name: net.ipv6.conf.all.forwarding
+    value: "1"
+    state: present
+    reload: true
+  tags: sysctl
+
+# Longhorn prerequisites
+- name: Install Longhorn prerequisites
+  ansible.builtin.apt:
+    name:
+      - open-iscsi
+      - nfs-common
+      - util-linux
+    state: present
+    update_cache: true
+  tags: longhorn
+
+- name: Enable and start iscsid
+  ansible.builtin.systemd:
+    name: iscsid
+    enabled: true
+    state: started
+  tags: longhorn
+
+# Provision /dev/sdb for Longhorn data path
+- name: Create ext4 filesystem on /dev/sdb
+  community.general.filesystem:
+    fstype: ext4
+    dev: /dev/sdb
+    force: false
+  tags: longhorn
+
+- name: Create /var/lib/longhorn mount point
+  ansible.builtin.file:
+    path: /var/lib/longhorn
+    state: directory
+    mode: '0750'
+  tags: longhorn
+
+- name: Mount /dev/sdb to /var/lib/longhorn and persist in fstab
+  ansible.posix.mount:
+    path: /var/lib/longhorn
+    src: /dev/sdb
+    fstype: ext4
+    state: mounted
+    opts: defaults
+  tags: longhorn
