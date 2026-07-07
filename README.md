@@ -8,8 +8,8 @@ Ansible playbook that deploys a high-availability [RKE2](https://docs.rke2.io/) 
 - Traefik ingress (bundled with RKE2 v1.36, replaces the retired ingress-nginx)
 
 **Cluster topology:**
-- 3 control-plane servers (`10.100.102.168–170`)
-- 3 worker agents (`10.100.102.171–173`)
+- 3 control-plane servers (`10.100.102.168–170`) — 4 GB RAM, 4 vCPU, 50 GB OS disk + 60 GB Longhorn disk
+- 3 worker agents (`10.100.102.171–173`) — 4 GB RAM, 4 vCPU, 50 GB OS disk + 60 GB Longhorn disk
 - Control-plane VIP: `10.100.102.175`
 - MetalLB LoadBalancer pool: `10.100.102.180–185`
 
@@ -57,6 +57,7 @@ flowchart TD
 | Requirement | Detail |
 |---|---|
 | OS / arch | Ubuntu 26.04 LTS (resolute), amd64 |
+| RAM | **Minimum 4 GB per node** — control-plane nodes need ≥4 GB for etcd + kube-apiserver to start reliably |
 | Ansible | >= 2.14 on the controller |
 | SSH key | `~/.ssh/ansible-new` with access to all nodes as `simonj` |
 | Passwordless sudo | Already applied on all 6 nodes: `simonj ALL=(ALL) NOPASSWD: ALL` |
@@ -83,6 +84,12 @@ Collections used:
 
 ## Quick Start
 
+```bash
+ansible-playbook site.yaml
+```
+
+That's it. Run from the repo root. Full steps below.
+
 1. **Clone the repository**
 
    ```bash
@@ -90,15 +97,11 @@ Collections used:
    cd Ansible
    ```
 
-2. **Verify the inventory** matches your nodes
-
-   ```bash
-   # inventory/hosts.ini
-   ```
+2. **Verify the inventory** matches your nodes (`inventory/hosts.ini`)
 
 3. **Verify the variables** in `inventory/group_vars/all.yaml`
 
-4. **Install collections**
+4. **Install Ansible collections** (first time only)
 
    ```bash
    ansible-galaxy collection install -r collections/requirements.yaml
@@ -110,7 +113,7 @@ Collections used:
    ansible-playbook site.yaml
    ```
 
-   The full run takes 5–15 minutes depending on hardware and internet speed.
+   The full run takes 5–15 minutes depending on hardware and internet speed. All 6 nodes are configured in parallel where possible.
 
 ---
 
@@ -244,7 +247,8 @@ helm install headlamp headlamp/headlamp --namespace headlamp --create-namespace 
 ## Known Limitations / TODOs
 
 - **Linux amd64 only** — The `os` and `arch` variables are used directly in the download URL. Other architectures require changing these variables.
-- **Ubuntu 26.04 not officially tested** — Only Ubuntu 24.04 is in the RKE2/Rancher support matrix. Works fine for homelab use.
+- **Ubuntu 26.04 not officially tested** — Only Ubuntu 24.04 is in the RKE2 support matrix. Works fine in practice (tested and confirmed working).
+- **Minimum 4 GB RAM required on control-plane nodes** — RKE2 v1.36 needs `Delegate=yes` and `TasksMax=infinity` in the systemd unit (already set in the templates). Nodes with less than ~3 GB RAM will stall on kube-apiserver startup.
 - **No multi-CNI support** — Only the RKE2 default CNI (Canal/Flannel) is supported. Canal, Calico, or Cilium would require additional configuration.
 - **`kubernetes.core` collection unused** — Listed as a collection dependency but all cluster interactions use raw `kubectl` commands. A future improvement would be to replace `kubectl` shell commands with `kubernetes.core` tasks.
 - **Wait logic is basic** — Server readiness polling uses fixed retry/delay loops. Slow environments may need `retries` values increased in `roles/add-server/tasks/main.yaml` and `roles/apply-manifests/tasks/main.yaml`.
