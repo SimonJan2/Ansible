@@ -1,0 +1,115 @@
+- name: Create directory for K3s config
+  ansible.builtin.file:
+    path: "/etc/rancher/k3s"
+    state: directory
+    mode: '0755'
+
+- name: Create directory for K3s server data
+  ansible.builtin.file:
+    path: "/var/lib/rancher/k3s/server"
+    state: directory
+    mode: '0755'
+
+# Deploy bootstrap server config to kube-master-1 only (cluster-init bootstraps etcd)
+- name: Deploy K3s server configuration (bootstrap)
+  ansible.builtin.template:
+    src: templates/k3s-server-config.j2
+    dest: /etc/rancher/k3s/config.yaml
+    owner: root
+    group: root
+    mode: '0644'
+  when: inventory_hostname in groups['servers']
+
+- name: Create systemd service file for K3s server
+  ansible.builtin.template:
+    src: templates/k3s-server.service.j2
+    dest: /etc/systemd/system/k3s-server.service
+    owner: root
+    group: root
+    mode: '0644'
+  when: inventory_hostname in groups['servers']
+
+- name: Create systemd service file for K3s agent
+  ansible.builtin.template:
+    src: templates/k3s-agent.service.j2
+    dest: /etc/systemd/system/k3s-agent.service
+    owner: root
+    group: root
+    mode: '0644'
+  when: inventory_hostname in groups['agents']
+
+# Bootstrap kube-master-1 first; other servers join in add-server play
+- name: Ensure K3s server is enabled and running on bootstrap node
+  ansible.builtin.systemd:
+    name: k3s-server
+    enabled: true
+    state: restarted
+    daemon_reload: true
+  when: inventory_hostname == groups['servers'][0]
+
+# Wait for the node-token file — signals that etcd and the API server are up
+- name: Wait for node-token
+  ansible.builtin.wait_for:
+    path: /var/lib/rancher/k3s/server/node-token
+  when: inventory_hostname == groups['servers'][0]
+
+# K3s ships a single multi-call binary; create a kubectl symlink so standard tools work
+- name: Create kubectl symlink pointing to k3s binary
+  ansible.builtin.file:
+    src: "{{ k3s_install_dir }}/k3s"
+    dest: "{{ k3s_install_dir }}/kubectl"
+    state: link
+  when: inventory_hostname == groups['servers'][0]
+
+- name: Register node-token file access mode
+  ansible.builtin.stat:
+    path: /var/lib/rancher/k3s/server
+  register: p
+
+- name: Change file access for node-token
+  ansible.builtin.file:
+    path: /var/lib/rancher/k3s/server
+    mode: "g+rx,o+rx"
+  when: inventory_hostname == groups['servers'][0]
+
+# Fetch and decode the join token so other plays can reference it as a fact
+- name: Fetch the token from the bootstrap server
+  ansible.builtin.slurp:
+    src: /var/lib/rancher/k3s/server/node-token
+  register: k3s_token
+  when: inventory_hostname == groups['servers'][0]
+  run_once: true
+
+- name: Save bootstrap node-token as a fact for later plays
+  ansible.builtin.set_fact:
+    token: "{{ k3s_token.content | b64decode | regex_replace('\n', '') }}"
+
+- name: Restore node-token file access
+  ansible.builtin.file:
+    path: /var/lib/rancher/k3s/server
+    mode: "{{ p.stat.mode }}"
+  when: inventory_hostname == groups['servers'][0]
+
+- name: Ensure .kube directory exists in user's home
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/.kube"
+    state: directory
+    mode: '0755'
+  become: true
+
+- name: Copy kubeconfig to user home directory
+  ansible.builtin.copy:
+    src: /etc/rancher/k3s/k3s.yaml
+    dest: "/home/{{ ansible_user }}/.kube/config"
+    remote_src: true
+    owner: "{{ ansible_user }}"
+    mode: "u=rw,g=,o="
+  when: inventory_hostname == groups['servers'][0]
+
+# Replace the loopback address so the kubeconfig points at the actual server IP
+- name: Replace loopback address in kubeconfig with kube-master-1 IP
+  ansible.builtin.replace:
+    path: "/home/{{ ansible_user }}/.kube/config"
+    regexp: '127\.0\.0\.1'
+    replace: "{{ hostvars['kube-master-1']['ansible_host'] }}"
+  when: inventory_hostname == groups['servers'][0]

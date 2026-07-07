@@ -1,17 +1,17 @@
-# Copy agent config to all agents - we need to change agent2 & 3 later with the token
-- name: Deploy RKE2 Agent Configuration
+# Copy agent join config to all agent nodes
+- name: Deploy K3s agent configuration
   ansible.builtin.template:
-    src: templates/rke2-agent-config.j2
-    dest: /etc/rancher/rke2/config.yaml
+    src: templates/k3s-agent-config.j2
+    dest: /etc/rancher/k3s/config.yaml
     owner: root
     group: root
     mode: '0644'
   when: inventory_hostname in groups['agents']
 
-# Check agents have restarted to pick up config
-- name: Ensure RKE2 agents are enabled and running
+# Start agents — they will connect to the bootstrap server and join the cluster
+- name: Ensure K3s agents are enabled and running
   ansible.builtin.systemd:
-    name: rke2-agent
+    name: k3s-agent
     enabled: true
     state: restarted
     daemon_reload: true

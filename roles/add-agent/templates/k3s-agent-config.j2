@@ -1,0 +1,4 @@
+token: {{ hostvars['kube-master-1']['token'] }}
+server: https://{{ hostvars['kube-master-1']['ansible_host'] }}:6443
+node-label:
+  - "agent=true"

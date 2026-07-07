@@ -1,11 +1,12 @@
-# RKE2 Homelab Cluster
+# K3s Homelab Cluster
 
-Ansible playbook that deploys a high-availability [RKE2](https://docs.rke2.io/) Kubernetes cluster on 6 bare-metal/VM nodes with:
+Ansible playbook that deploys a high-availability [K3s](https://k3s.io/) Kubernetes cluster on 6 bare-metal/VM nodes with:
 
+- Embedded **etcd** HA control-plane (no external datastore required)
 - Virtual control-plane IP via [kube-vip](https://kube-vip.io/) (ARP mode)
 - LoadBalancer IP pool via [MetalLB](https://metallb.universe.tf/)
 - Longhorn-ready disk provisioning (`/dev/sdb` formatted and mounted on every node)
-- Traefik ingress (bundled with RKE2 v1.36, replaces the retired ingress-nginx)
+- Traefik ingress (K3s default — ServiceLB disabled, MetalLB used instead)
 
 **Cluster topology:**
 - 3 control-plane servers (`10.100.102.168–170`) — 4 GB RAM, 4 vCPU, 50 GB OS disk + 60 GB Longhorn disk
@@ -22,7 +23,7 @@ flowchart TD
     ansible[Ansible Controller]
 
     subgraph controlPlane [Control Plane]
-        km1["kube-master-1\n10.100.102.168\n(bootstrap)"]
+        km1["kube-master-1\n10.100.102.168\n(bootstrap / etcd leader)"]
         km2["kube-master-2\n10.100.102.169"]
         km3["kube-master-3\n10.100.102.170"]
     end
@@ -57,13 +58,13 @@ flowchart TD
 | Requirement | Detail |
 |---|---|
 | OS / arch | Ubuntu 26.04 LTS (resolute), amd64 |
-| RAM | **Minimum 4 GB per node** — control-plane nodes need ≥4 GB for etcd + kube-apiserver to start reliably |
+| RAM | **Minimum 2 GB per node** — control-plane nodes need ≥2 GB for etcd + kube-apiserver |
 | Ansible | >= 2.14 on the controller |
 | SSH key | `~/.ssh/ansible-new` with access to all nodes as `simonj` |
 | Passwordless sudo | Already applied on all 6 nodes: `simonj ALL=(ALL) NOPASSWD: ALL` |
 | Python | `/usr/bin/python3.14` on all target nodes |
 | Disks | `sda` — OS (50 GB); `sdb` — Longhorn data (60 GB, raw, no existing filesystem) |
-| Ports | TCP 6443 (API), TCP 9345 (RKE2 supervisor), plus standard Kubernetes inter-node ports |
+| Ports | TCP 6443 (API / join), plus standard Kubernetes inter-node ports |
 
 Install required Ansible collections before running:
 
@@ -95,6 +96,7 @@ That's it. Run from the repo root. Full steps below.
    ```bash
    git clone <repo-url>
    cd Ansible
+   git checkout K3s-Cluster
    ```
 
 2. **Verify the inventory** matches your nodes (`inventory/hosts.ini`)
@@ -132,17 +134,17 @@ kube-node-1 ansible_host=10.100.102.171
 kube-node-2 ansible_host=10.100.102.172
 kube-node-3 ansible_host=10.100.102.173
 
-[rke2:children]
+[k3s:children]
 servers
 agents
 
-[rke2:vars]
+[k3s:vars]
 ansible_user=simonj
 ```
 
-- `servers` — RKE2 control-plane nodes. **`kube-master-1` is always the bootstrap node.**
-- `agents` — RKE2 worker nodes.
-- `rke2` — parent group encompassing all nodes.
+- `servers` — K3s control-plane nodes. **`kube-master-1` is always the bootstrap node** (it initialises the embedded etcd cluster with `cluster-init: true`).
+- `agents` — K3s worker nodes.
+- `k3s` — parent group encompassing all nodes.
 
 ---
 
@@ -152,16 +154,16 @@ All user-facing variables live in `inventory/group_vars/all.yaml`.
 
 | Variable | Value | Description |
 |---|---|---|
-| `os` | `linux` | Target OS (used in the RKE2 download URL) |
+| `os` | `linux` | Target OS |
 | `arch` | `amd64` | Target architecture |
 | `vip` | `10.100.102.175` | Virtual IP for the control-plane, managed by kube-vip |
-| `rke2_version` | `v1.36.1+rke2r2` | RKE2 release to download |
+| `k3s_version` | `v1.36.2+k3s1` | K3s release to download |
+| `k3s_install_dir` | `/usr/local/bin` | Directory the K3s binary is installed to |
 | `kube_vip_version` | `v1.2.0` | kube-vip image tag |
 | `vip_interface` | `ens18` | Network interface kube-vip binds the VIP to |
 | `metallb_version` | `v0.16.0` | MetalLB release to deploy |
 | `lb_range` | `10.100.102.180-10.100.102.185` | MetalLB `IPAddressPool` range |
 | `lb_pool_name` | `first-pool` | Name of the MetalLB `IPAddressPool` resource |
-| `rke2_install_dir` | `/usr/local/bin` | Directory the RKE2 binary is downloaded to |
 
 ---
 
@@ -173,7 +175,7 @@ The main playbook `site.yaml` runs six sequential plays:
 flowchart LR
     p1["Play 1\nPrepare all nodes"]
     p2["Play 2\nDeploy kube-vip"]
-    p3["Play 3\nPrepare RKE2"]
+    p3["Play 3\nPrepare K3s"]
     p4["Play 4\nAdd servers"]
     p5["Play 5\nAdd agents"]
     p6["Play 6\nApply manifests"]
@@ -183,11 +185,11 @@ flowchart LR
 
 | # | Play | Target hosts | What happens |
 |---|---|---|---|
-| 1 | Prepare all nodes | `rke2` (all) | Enable IPv4/IPv6 forwarding; install Longhorn prereqs (`open-iscsi`, `nfs-common`); format `/dev/sdb` as ext4 and mount to `/var/lib/longhorn`; download the RKE2 binary to `/usr/local/bin` |
-| 2 | Deploy kube-vip | `servers` | Create `/var/lib/rancher/rke2/server/manifests/`; render the kube-vip DaemonSet manifest onto `kube-master-1` for auto-deployment at bootstrap |
-| 3 | Prepare RKE2 | `servers`, `agents` | Deploy server config + systemd unit to all servers; deploy agent systemd unit to agents; start `rke2-server` on `kube-master-1`; wait for the node token; distribute join token as a host fact; copy kubeconfig for `simonj` |
-| 4 | Add additional servers | `servers` | Deploy join config (with token) to `kube-master-2`/`kube-master-3`; wait for cluster API on `kube-master-1`; apply kube-vip RBAC and cloud-controller manifests; start `rke2-server` on remaining servers |
-| 5 | Add agents | `agents` | Deploy agent join config (with token); start/restart `rke2-agent` on all agents |
+| 1 | Prepare all nodes | `k3s` (all) | Enable IPv4/IPv6 forwarding; install Longhorn prereqs (`open-iscsi`, `nfs-common`); format `/dev/sdb` as ext4 and mount to `/var/lib/longhorn`; download the K3s binary to `/usr/local/bin` |
+| 2 | Deploy kube-vip | `servers` | Create `/var/lib/rancher/k3s/server/manifests/`; render the kube-vip DaemonSet manifest onto `kube-master-1` for auto-deployment at bootstrap |
+| 3 | Prepare K3s on servers and agents | `servers`, `agents` | Deploy bootstrap server config (`cluster-init: true`) to all servers; deploy systemd units to servers and agents; start `k3s-server` on `kube-master-1`; wait for the node token; distribute join token as a host fact; create `kubectl` symlink; copy kubeconfig for `simonj` |
+| 4 | Add additional K3s servers | `servers` | Deploy join config (with token) to `kube-master-2`/`kube-master-3`; wait for cluster API on `kube-master-1`; apply kube-vip RBAC and cloud-controller manifests; start `k3s-server` on remaining servers |
+| 5 | Add agents | `agents` | Deploy agent join config (with token); start/restart `k3s-agent` on all agents |
 | 6 | Apply manifests | `servers` | Wait for all `server=true` nodes Ready; deploy MetalLB native manifest (v0.16.0); wait for MetalLB controller pod; apply `L2Advertisement`; render and apply `IPAddressPool` |
 
 ---
@@ -197,9 +199,9 @@ flowchart LR
 | Role | Directory | Summary |
 |---|---|---|
 | `prepare-nodes` | `roles/prepare-nodes/` | Sets IP forwarding via sysctl; installs Longhorn prerequisites; formats `/dev/sdb` as ext4 and mounts it to `/var/lib/longhorn` on all nodes |
-| `rke2-download` | `roles/rke2-download/` | Creates `rke2_install_dir` and downloads the RKE2 binary from GitHub releases |
-| `kube-vip` | `roles/kube-vip/` | Renders and places the kube-vip DaemonSet manifest (ARP mode on `ens18`) on `kube-master-1` for RKE2 to auto-apply at bootstrap |
-| `rke2-prepare` | `roles/rke2-prepare/` | Bootstraps `kube-master-1`, creates systemd service units for servers and agents, captures and distributes the cluster join token, and sets up kubeconfig |
+| `k3s-download` | `roles/k3s-download/` | Creates `k3s_install_dir` and downloads the K3s binary from GitHub releases |
+| `kube-vip` | `roles/kube-vip/` | Renders and places the kube-vip DaemonSet manifest (ARP mode on `ens18`) on `kube-master-1` for K3s to auto-apply at bootstrap |
+| `k3s-prepare` | `roles/k3s-prepare/` | Bootstraps `kube-master-1` with embedded etcd (`cluster-init: true`), creates systemd service units for servers and agents, captures and distributes the cluster join token, creates the `kubectl` symlink, and sets up kubeconfig |
 | `add-server` | `roles/add-server/` | Joins `kube-master-2` and `kube-master-3` to the cluster using the bootstrap token; applies kube-vip RBAC and cloud-controller |
 | `add-agent` | `roles/add-agent/` | Joins all agent nodes using the bootstrap token |
 | `apply-manifests` | `roles/apply-manifests/` | Deploys MetalLB (controller, L2Advertisement, IPAddressPool) |
@@ -221,8 +223,9 @@ kubectl --kubeconfig ~/.kube/config get nodes
 ```
 
 The cluster is configured with:
-- **Ingress**: Traefik (RKE2 v1.36 default — ingress-nginx is deprecated and disabled)
-- **CNI**: Canal/Flannel (RKE2 default)
+- **Ingress**: Traefik (K3s default)
+- **CNI**: Flannel (K3s default)
+- **ServiceLB**: Disabled — MetalLB handles all `LoadBalancer` IPs
 - **Node labels**: `server=true` on control-plane nodes, `agent=true` on worker nodes
 - **Longhorn storage**: `/dev/sdb` mounted to `/var/lib/longhorn` on every node, ready for Longhorn installation
 
@@ -244,11 +247,48 @@ helm install headlamp headlamp/headlamp --namespace headlamp --create-namespace 
 
 ---
 
+## Migrating from RKE2
+
+This playbook targets the **same 6 nodes** as the `RKE2-Cluster` branch. Running both on the same nodes simultaneously will cause conflicts (duplicate VIP, port 6443, shared `/dev/sdb` mount). Before running this playbook:
+
+1. Stop and uninstall RKE2 on all nodes:
+
+   ```bash
+   # On each server node
+   sudo systemctl stop rke2-server
+   sudo /usr/local/bin/rke2-uninstall.sh
+
+   # On each agent node
+   sudo systemctl stop rke2-agent
+   sudo /usr/local/bin/rke2-agent-uninstall.sh
+   ```
+
+2. Clean up leftover data:
+
+   ```bash
+   sudo rm -rf /etc/rancher/rke2 /var/lib/rancher/rke2
+   ```
+
+3. Reboot all nodes (recommended — ensures the VIP is released and kernel state is clean):
+
+   ```bash
+   sudo reboot
+   ```
+
+4. Run this playbook:
+
+   ```bash
+   ansible-playbook site.yaml
+   ```
+
+---
+
 ## Known Limitations / TODOs
 
-- **Linux amd64 only** — The `os` and `arch` variables are used directly in the download URL. Other architectures require changing these variables.
-- **Ubuntu 26.04 not officially tested** — Only Ubuntu 24.04 is in the RKE2 support matrix. Works fine in practice (tested and confirmed working).
-- **Minimum 4 GB RAM required on control-plane nodes** — RKE2 v1.36 needs `Delegate=yes` and `TasksMax=infinity` in the systemd unit (already set in the templates). Nodes with less than ~3 GB RAM will stall on kube-apiserver startup.
-- **No multi-CNI support** — Only the RKE2 default CNI (Canal/Flannel) is supported. Canal, Calico, or Cilium would require additional configuration.
+- **Linux amd64 only** — The download URL uses the binary name `k3s` (amd64). Other architectures (`arm64`, `armhf`) require a different binary name suffix; update `vars/main.yaml` in the `k3s-download` role.
+- **Ubuntu 26.04 not in K3s support matrix** — Only Ubuntu 22.04 and 24.04 are officially tested. Works fine in practice on 26.04.
+- **Minimum 2 GB RAM per control-plane node** — K3s is lighter than RKE2 but still needs ≥2 GB for the embedded etcd + kube-apiserver on the control-plane nodes.
+- **No multi-CNI support** — Only the K3s default CNI (Flannel) is supported. Calico or Cilium would require additional configuration and disabling Flannel at install time.
 - **`kubernetes.core` collection unused** — Listed as a collection dependency but all cluster interactions use raw `kubectl` commands. A future improvement would be to replace `kubectl` shell commands with `kubernetes.core` tasks.
 - **Wait logic is basic** — Server readiness polling uses fixed retry/delay loops. Slow environments may need `retries` values increased in `roles/add-server/tasks/main.yaml` and `roles/apply-manifests/tasks/main.yaml`.
+- **No reset/uninstall playbook** — K3s ships its own uninstall scripts (`k3s-uninstall.sh` on servers, `k3s-agent-uninstall.sh` on agents). A `reset.yaml` play could wrap these for convenience.

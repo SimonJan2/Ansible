@@ -1,13 +1,13 @@
 [Unit]
-Description=Rancher Kubernetes Engine v2 (agent)
-Documentation=https://github.com/rancher/rke2#readme
+Description=Lightweight Kubernetes (K3s) - server
+Documentation=https://k3s.io
 Wants=network-online.target
 After=network-online.target
 
 [Service]
 Type=notify
-EnvironmentFile=-/etc/default/rke2-agent
-EnvironmentFile=-/etc/sysconfig/rke2-agent
+EnvironmentFile=-/etc/default/k3s-server
+EnvironmentFile=-/etc/sysconfig/k3s-server
 KillMode=process
 Delegate=yes
 LimitNOFILE=1048576
@@ -19,7 +19,7 @@ Restart=always
 RestartSec=5s
 ExecStartPre=-/sbin/modprobe br_netfilter
 ExecStartPre=-/sbin/modprobe overlay
-ExecStart=/usr/local/bin/rke2 agent
+ExecStart=/usr/local/bin/k3s server
 
 [Install]
 WantedBy=multi-user.target

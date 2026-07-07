@@ -1,0 +1,17 @@
+- name: Create directory for K3s binary
+  ansible.builtin.file:
+    path: "{{ k3s_install_dir }}"
+    state: directory
+    mode: '0755'
+
+- name: Download K3s binary
+  ansible.builtin.get_url:
+    url: "{{ k3s_binary_url }}"
+    dest: "{{ k3s_install_dir }}/k3s"
+    mode: '0755'
+
+- name: Set executable permissions on K3s binary
+  ansible.builtin.file:
+    path: "{{ k3s_install_dir }}/k3s"
+    mode: '0755'
+    state: file
