@@ -271,6 +271,7 @@ Note: the RKE2 branch installs RKE2 as a **raw binary + hand-written systemd uni
    sudo rm -f /etc/systemd/system/rke2-server.service /etc/systemd/system/rke2-agent.service
    sudo systemctl daemon-reload
    sudo rm -rf /etc/rancher/rke2 /var/lib/rancher/rke2 /usr/local/bin/rke2 /usr/local/bin/kubectl
+   sudo rm -rf /etc/cni /var/lib/cni /var/log/pods /var/log/containers /var/run/calico
    ```
 
 3. Reboot all nodes (recommended — ensures the VIP is released, `/dev/sdb`'s mount is cleanly re-established, and kernel/network state is fresh):
