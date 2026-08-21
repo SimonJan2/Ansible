@@ -42,3 +42,27 @@
     state: restarted
     daemon_reload: true
   when: inventory_hostname != groups['servers'][0]
+
+# Wait for this server's own kubeconfig to be written after joining the cluster
+- name: Wait for kubeconfig on additional servers
+  ansible.builtin.wait_for:
+    path: /etc/rancher/k3s/k3s.yaml
+  when: inventory_hostname != groups['servers'][0]
+
+- name: Copy kubeconfig to user home directory on additional servers
+  ansible.builtin.copy:
+    src: /etc/rancher/k3s/k3s.yaml
+    dest: "/home/{{ ansible_user }}/.kube/config"
+    remote_src: true
+    owner: "{{ ansible_user }}"
+    mode: "u=rw,g=,o="
+  when: inventory_hostname != groups['servers'][0]
+
+# Point at the kube-vip VIP so kubectl keeps working from this master
+# regardless of which node currently holds the control-plane VIP
+- name: Replace loopback address in kubeconfig with kube-vip VIP on additional servers
+  ansible.builtin.replace:
+    path: "/home/{{ ansible_user }}/.kube/config"
+    regexp: '127\.0\.0\.1'
+    replace: "{{ vip }}"
+  when: inventory_hostname != groups['servers'][0]

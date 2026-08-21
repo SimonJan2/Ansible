@@ -1,6 +1,22 @@
+- name: Ensure /etc/rancher directory is traversable
+  # The k3s installer creates /etc/rancher with mode 0644 (no execute bit),
+  # which blocks non-root users from traversing into /etc/rancher/k3s even
+  # when that subdirectory itself has correct permissions. Without this,
+  # kubectl prints "open /etc/rancher/k3s/config.yaml.d: permission denied".
+  ansible.builtin.file:
+    path: "/etc/rancher"
+    state: directory
+    mode: '0755'
+
 - name: Create directory for K3s config
   ansible.builtin.file:
     path: "/etc/rancher/k3s"
+    state: directory
+    mode: '0755'
+
+- name: Create directory for K3s config drop-ins
+  ansible.builtin.file:
+    path: "/etc/rancher/k3s/config.yaml.d"
     state: directory
     mode: '0755'
 
@@ -54,12 +70,13 @@
   when: inventory_hostname == groups['servers'][0]
 
 # K3s ships a single multi-call binary; create a kubectl symlink so standard tools work
+# on every server (not just the bootstrap node), so kubectl is usable from any master.
 - name: Create kubectl symlink pointing to k3s binary
   ansible.builtin.file:
     src: "{{ k3s_install_dir }}/k3s"
     dest: "{{ k3s_install_dir }}/kubectl"
     state: link
-  when: inventory_hostname == groups['servers'][0]
+  when: inventory_hostname in groups['servers']
 
 - name: Register node-token file access mode
   ansible.builtin.stat:
@@ -106,10 +123,11 @@
     mode: "u=rw,g=,o="
   when: inventory_hostname == groups['servers'][0]
 
-# Replace the loopback address so the kubeconfig points at the actual server IP
-- name: Replace loopback address in kubeconfig with kube-master-1 IP
+# Replace the loopback address so the kubeconfig points at the kube-vip VIP,
+# keeping kubectl working from kube-master-1 even if it later loses leadership
+- name: Replace loopback address in kubeconfig with kube-vip VIP
   ansible.builtin.replace:
     path: "/home/{{ ansible_user }}/.kube/config"
     regexp: '127\.0\.0\.1'
-    replace: "{{ hostvars['kube-master-1']['ansible_host'] }}"
+    replace: "{{ vip }}"
   when: inventory_hostname == groups['servers'][0]
